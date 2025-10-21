@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.example.fido_flutter_app",
+      "sha256_cert_fingerprints": [
+        "2B:F3:DD:60:B8:AA:17:82:B1:9E:30:25:6F:17:66:BB:74:1B:2A:C9:71:DC:D2:F9:B9:B3:89:E9:9F:63:38:47"
+      ]
+    }
+  }
+]
