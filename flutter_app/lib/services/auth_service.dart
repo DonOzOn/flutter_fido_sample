@@ -9,7 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/user.dart';
 
 class AuthService {
-  static const String baseUrl = 'http://192.168.1.7:3000/api';
+  static const String baseUrl = 'https://households-mailing-operated-latin.trycloudflare.com/api';
   static const String tokenKey = 'auth_token';
   static const String userKey = 'user_data';
   static final PasskeyAuthenticator _authenticator = PasskeyAuthenticator();
