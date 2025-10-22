@@ -110,15 +110,25 @@ POST /api/auth/register/begin
 final registrationRequest = RegisterRequestType(
   challenge: challengeData['challenge'],  // Base64URL string
   relyingParty: RelyingPartyType(
-    id: "localhost",           // Domain của app/server
-    name: "FIDO2 Demo"
+    id: challengeData['rp']['id'],        // Domain của app/server
+    name: challengeData['rp']['name']     // "FIDO2 Demo App"
   ),
   user: UserType(
-    id: challengeData['user']['id'],      // Base64URL userId
+    id: convertToBase64Url(challengeData['user']['id']), // Base64URL userId
     name: email,                           // Email
     displayName: name                      // Tên hiển thị
   ),
-  excludeCredentials: []  // Danh sách credentials cần loại trừ
+  pubKeyCredParams: [
+    PubKeyCredParamType(type: 'public-key', alg: -7),  // ES256
+    PubKeyCredParamType(type: 'public-key', alg: -257), // RS256
+  ],
+  excludeCredentials: [],  // Danh sách credentials cần loại trừ
+  // CRITICAL: authSelectionType để tạo resident key (discoverable credential)
+  authSelectionType: AuthenticatorSelectionType(
+    residentKey: 'required',
+    requireResidentKey: true,
+    userVerification: 'preferred',
+  ),
 );
 
 // Gọi platform authenticator (Face ID, Touch ID, Fingerprint)
@@ -156,24 +166,29 @@ POST /api/auth/register/complete
     "clientDataJSON": "base64url_client_data",
     "attestationObject": "base64url_attestation"
   },
-  "type": "public-key"
+  "type": "public-key",
+  "challengeId": "uuid_challenge_id"
 }
 ```
 
 **Server verify (sử dụng @simplewebauthn/server):**
-1. Lấy challenge đã lưu từ database (theo email)
+1. Lấy challenge đã lưu từ database (theo challengeId)
 2. Verify **clientDataJSON**:
    - Challenge khớp với challenge đã tạo
-   - Origin khớp với expected origin
+   - Origin khớp với expected origins (web HOẶC Android APK)
    - Type = "webauthn.create"
 3. Parse **attestationObject**:
    - Extract **authenticatorData**
-   - Extract **public key** (COSE format)
+   - Extract **public key** (COSE format) từ `verification.registrationInfo.credentialPublicKey`
    - Verify signature (nếu có attestation)
 4. Kiểm tra flags trong authenticatorData:
    - User Present (UP) = true
    - User Verified (UV) = true (optional)
    - Attested Credential Data flag = true
+
+**Expected Origins (server accepts both):**
+- Web: `https://formatting-terminals-strips-instant.trycloudflare.com`
+- Android: `android:apk-key-hash:K_PdYLiqF4KxnjAlbxdmu3QbKslx3NL5ubOJ6Z9jOEc`
 
 **Server lưu data:**
 ```javascript
@@ -257,7 +272,7 @@ POST /api/auth/signin/begin
 ```json
 {
   "challenge": "random_base64url_string",
-  "rpId": "localhost",
+  "rpId": "formatting-terminals-strips-instant.trycloudflare.com",
   "timeout": 60000,
   "userVerification": "preferred",
   "allowCredentials": [
@@ -266,7 +281,8 @@ POST /api/auth/signin/begin
       "id": "credential_id_base64url",
       "transports": ["internal"]
     }
-  ]
+  ],
+  "challengeId": "uuid_challenge_id"
 }
 ```
 
@@ -275,6 +291,7 @@ POST /api/auth/signin/begin
 - `rpId`: Domain của relying party (server)
 - `allowCredentials`: Danh sách passkeys mà user có thể dùng để authenticate
 - `userVerification`: "preferred" = yêu cầu biometric nếu có thể
+- `challengeId`: ID để track challenge này
 
 #### Bước 3: App Xác Thực với Passkey
 **Flutter app:**
@@ -503,6 +520,8 @@ Client                          Server
 - ✅ Secure token storage với FlutterSecureStorage (Keychain/EncryptedSharedPreferences)
 - ✅ Challenge-based verification (prevent replay attacks)
 - ✅ Proper credential storage (private keys in Secure Enclave/TEE)
+- ✅ Resident keys (discoverable credentials) với `residentKey: 'required'`
+- ✅ Android APK origin support (android:apk-key-hash)
 - ✅ CORS và Helmet security headers
 - ✅ Input validation và error handling
 
@@ -520,4 +539,217 @@ Client                          Server
 - iOS Simulator cần enable Touch ID/Face ID
 - Android emulator cần setup fingerprint
 - Production cần thay đổi JWT_SECRET và domain configuration
+- **CRITICAL**: Phải truyền `authSelectionType` với `residentKey: 'required'` trong Flutter để passkey được lưu đúng cách trên device
+- Server phải set `residentKey: 'required'` và `requireResidentKey: true` trong `authenticatorSelection`
+- Android origin format: `android:apk-key-hash:<base64url-sha256-fingerprint>`
+- Samsung Pass hoạt động tốt hơn Google Password Manager với Cloudflare tunnel URLs
 
+## 🌐 Publish Server với Cloudflare Tunnel
+
+Để test FIDO2 trên Android device thật, bạn cần publish server lên internet vì Android cần truy cập `assetlinks.json` để verify app.
+
+### Bước 1: Cài đặt Cloudflare Tunnel
+
+```bash
+# macOS
+brew install cloudflared
+
+# Linux
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+
+# Windows
+# Download from https://github.com/cloudflare/cloudflared/releases
+```
+
+### Bước 2: Chạy Tunnel
+
+```bash
+cloudflared tunnel --url http://localhost:3000
+```
+
+Cloudflare sẽ tạo một URL public, ví dụ:
+```
+https://formatting-terminals-strips-instant.trycloudflare.com
+```
+
+### Bước 3: Cập nhật Configuration
+
+**⚠️ QUAN TRỌNG:** Mỗi khi Cloudflare tunnel tạo URL mới, bạn PHẢI cập nhật 3 files sau:
+
+#### 3.1. Update Server Configuration
+
+**File:** `nodejs_server/.env`
+
+```env
+PORT=3000
+JWT_SECRET=your-super-secret-jwt-key-here-change-in-production
+RP_ID=formatting-terminals-strips-instant.trycloudflare.com
+RP_NAME=FIDO2 Demo App
+RP_ORIGIN=https://formatting-terminals-strips-instant.trycloudflare.com
+DB_PATH=./database.sqlite
+```
+
+**Thay đổi:**
+- `RP_ID`: Hostname của Cloudflare URL (không có `https://`)
+- `RP_ORIGIN`: Full URL với `https://`
+
+**Sau đó restart server:**
+```bash
+# Stop server (Ctrl+C)
+cd nodejs_server
+npm start
+```
+
+#### 3.2. Update Flutter App
+
+**File:** `flutter_app/lib/services/auth_service.dart`
+
+```dart
+class AuthService {
+  static const String baseUrl = 'https://formatting-terminals-strips-instant.trycloudflare.com/api';
+  // ... rest of code
+}
+```
+
+**Thay đổi:**
+- `baseUrl`: Thay thế URL cũ bằng URL mới từ Cloudflare
+
+#### 3.3. Update Android Manifest
+
+**File:** `flutter_app/android/app/src/main/AndroidManifest.xml`
+
+```xml
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="https"
+          android:host="formatting-terminals-strips-instant.trycloudflare.com" />
+</intent-filter>
+```
+
+**Thay đổi:**
+- `android:host`: Hostname của Cloudflare URL
+
+### Bước 4: Rebuild Flutter App
+
+```bash
+cd flutter_app
+flutter clean
+flutter pub get
+flutter run
+```
+
+### Bước 5: Verify Setup
+
+```bash
+# Test server health
+curl https://your-tunnel-url.trycloudflare.com/health
+
+# Test assetlinks.json (QUAN TRỌNG cho Android)
+curl https://your-tunnel-url.trycloudflare.com/.well-known/assetlinks.json
+```
+
+Response phải có SHA256 fingerprint của debug keystore:
+```json
+{
+  "relation": ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.example.fido_flutter_app",
+    "sha256_cert_fingerprints": [
+      "2B:F3:DD:60:B8:AA:17:82:B1:9E:30:25:6F:17:66:BB:74:1B:2A:C9:71:DC:D2:F9:B9:B3:89:E9:9F:63:38:47"
+    ]
+  }
+}
+```
+
+## 🔧 Troubleshooting Cloudflare Tunnel
+
+### Tunnel bị disconnect
+
+Cloudflare free tunnels không có uptime guarantee. Nếu tunnel bị disconnect:
+
+1. Kill tunnel cũ:
+```bash
+pkill cloudflared
+```
+
+2. Tạo tunnel mới:
+```bash
+cloudflared tunnel --url http://localhost:3000
+```
+
+3. Lấy URL mới và cập nhật lại 3 files (bước 3 ở trên)
+
+### Android vẫn báo lỗi "Cannot validate"
+
+1. **Check assetlinks.json accessible:**
+```bash
+curl https://your-url.trycloudflare.com/.well-known/assetlinks.json
+```
+
+2. **Bypass verification cho development (tạm thời):**
+```bash
+adb shell pm set-app-links --package com.example.fido_flutter_app 0 all
+```
+
+3. **Kiểm tra SHA256 fingerprint:**
+```bash
+keytool -list -v -keystore android/app/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep SHA256
+```
+
+### Server trả 502 Bad Gateway
+
+Server chưa chạy hoặc chưa restart sau khi update `.env`:
+
+```bash
+# Stop old server
+pkill -f "node server.js"
+
+# Start new server
+cd nodejs_server
+npm start
+```
+
+## 📱 Alternative: Sử dụng Local IP (Development)
+
+Nếu không muốn dùng Cloudflare tunnel, bạn có thể dùng local IP (chỉ hoạt động khi device và computer cùng WiFi):
+
+### 1. Lấy Local IP
+
+```bash
+# macOS/Linux
+ipconfig getifaddr en0
+
+# Output: 192.168.1.7
+```
+
+### 2. Update Configuration
+
+**nodejs_server/.env:**
+```env
+RP_ID=192.168.1.7
+RP_ORIGIN=http://192.168.1.7:3000
+```
+
+**flutter_app/lib/services/auth_service.dart:**
+```dart
+static const String baseUrl = 'http://192.168.1.7:3000/api';
+```
+
+**flutter_app/android/app/src/main/AndroidManifest.xml:**
+```xml
+<data android:scheme="http"
+      android:host="192.168.1.7"
+      android:port="3000" />
+```
+
+### 3. Bypass assetlinks verification
+
+```bash
+adb shell pm set-app-links --package com.example.fido_flutter_app 0 all
+```
+
+**Lưu ý:** Local IP chỉ hoạt động trên cùng một mạng WiFi và cần bypass verification.

@@ -39,8 +39,9 @@ router.post('/register/begin', async (req, res) => {
       userDisplayName: name,
       attestationType: 'none',
       authenticatorSelection: {
-        residentKey: 'preferred',
+        residentKey: 'required', // Changed from 'preferred' to 'required' to ensure passkey is stored on device
         userVerification: 'preferred',
+        requireResidentKey: true, // Explicitly require resident key for discoverability
         // Remove platform attachment to allow both platform and roaming authenticators
       },
       // Android supports these algorithms
@@ -57,10 +58,17 @@ router.post('/register/begin', async (req, res) => {
     await db.saveChallenge(challengeId, options.challenge, email, 'registration');
 
     // Add challengeId to response for client to send back
-    res.json({
+    const response = {
       ...options,
       challengeId,
-    });
+    };
+
+    console.log('Registration options being sent to client:');
+    console.log('- residentKey:', options.authenticatorSelection?.residentKey);
+    console.log('- requireResidentKey:', options.authenticatorSelection?.requireResidentKey);
+    console.log('- Full authenticatorSelection:', JSON.stringify(options.authenticatorSelection));
+
+    res.json(response);
   } catch (error) {
     console.error('Registration begin error:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -70,9 +78,10 @@ router.post('/register/begin', async (req, res) => {
 // Registration - Step 2: Complete registration
 router.post('/register/complete', async (req, res) => {
   try {
-    const { email, credentialId, publicKey, authenticatorData, clientDataJSON, challengeId } = req.body;
+    const { email, id, rawId, response, type, challengeId } = req.body;
 
-    if (!email || !credentialId || !publicKey || !authenticatorData || !clientDataJSON || !challengeId) {
+    if (!email || !id || !rawId || !response || !response.clientDataJSON || !response.attestationObject || !challengeId) {
+      console.error('Missing fields:', { email: !!email, id: !!id, rawId: !!rawId, response: !!response, challengeId: !!challengeId });
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -87,18 +96,23 @@ router.post('/register/complete', async (req, res) => {
     }
 
     // Verify registration response
+    // Note: The Flutter passkeys package returns base64url-encoded strings
+    // Android apps send origin as "android:apk-key-hash:<hash>" format
     const verification = await verifyRegistrationResponse({
       response: {
-        id: credentialId,
-        rawId: Buffer.from(credentialId, 'base64url'),
+        id: id, // Already base64url-encoded string
+        rawId: id, // Use same as id since they should match
         response: {
-          clientDataJSON: Buffer.from(clientDataJSON, 'base64url'),
-          attestationObject: Buffer.from(authenticatorData, 'base64url'),
+          clientDataJSON: response.clientDataJSON, // Already base64url-encoded
+          attestationObject: response.attestationObject, // Already base64url-encoded
         },
-        type: 'public-key',
+        type: type || 'public-key',
       },
       expectedChallenge: storedChallenge.challenge,
-      expectedOrigin: process.env.RP_ORIGIN,
+      expectedOrigin: [
+        process.env.RP_ORIGIN, // Web origin
+        'android:apk-key-hash:K_PdYLiqF4KxnjAlbxdmu3QbKslx3NL5ubOJ6Z9jOEc', // Android app origin
+      ],
       expectedRPID: process.env.RP_ID,
     });
 
@@ -110,13 +124,13 @@ router.post('/register/complete', async (req, res) => {
     // Create user and save credential
     const userId = uuidv4();
     const user = await db.createUser(userId, email, storedChallenge.user_email);
-    
+
     const credId = uuidv4();
     await db.saveCredential(
       credId,
       userId,
-      credentialId,
-      Buffer.from(publicKey, 'base64url').toString('base64'),
+      id,
+      Buffer.from(verification.registrationInfo.credentialPublicKey).toString('base64'),
       verification.registrationInfo.counter
     );
 
@@ -143,7 +157,7 @@ router.post('/register/complete', async (req, res) => {
     });
   } catch (error) {
     console.error('Registration complete error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: 'Internal server error', error: error.message });
   }
 });
 
@@ -171,14 +185,19 @@ router.post('/signin/begin', async (req, res) => {
     const challengeId = uuidv4();
 
     // Generate authentication options
+    // Include allowCredentials to help Android find the specific passkey
     const options = await generateAuthenticationOptions({
       rpID: process.env.RP_ID,
       allowCredentials: credentials.map(cred => ({
-        id: Buffer.from(cred.credential_id, 'base64url'),
+        id: Buffer.from(cred.credential_id, 'base64url'), // Convert base64url string to Buffer
         type: 'public-key',
+        transports: ['internal'], // Platform authenticator (biometric)
       })),
       userVerification: 'preferred',
     });
+
+    console.log('Sign-in options - allowCredentials:',
+      options.allowCredentials?.map(c => ({ id: c.id, type: c.type })));
 
     // Save challenge temporarily
     await db.saveChallenge(challengeId, options.challenge, email, 'authentication');
@@ -196,9 +215,10 @@ router.post('/signin/begin', async (req, res) => {
 // Sign in - Step 2: Complete authentication
 router.post('/signin/complete', async (req, res) => {
   try {
-    const { email, credentialId, authenticatorData, clientDataJSON, signature, challengeId } = req.body;
+    const { id, rawId, response, type, challengeId } = req.body;
 
-    if (!email || !credentialId || !authenticatorData || !clientDataJSON || !signature || !challengeId) {
+    if (!id || !rawId || !response || !response.clientDataJSON || !response.authenticatorData || !response.signature || !challengeId) {
+      console.error('Missing fields:', { id: !!id, rawId: !!rawId, response: !!response, challengeId: !!challengeId });
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -208,36 +228,42 @@ router.post('/signin/complete', async (req, res) => {
       return res.status(400).json({ message: 'Invalid or expired challenge' });
     }
 
-    if (storedChallenge.user_email !== email) {
-      return res.status(400).json({ message: 'Email mismatch' });
-    }
-
-    // Get user and credential
-    const user = await db.getUserByEmail(email);
-    const credential = await db.getCredentialByCredentialId(credentialId);
-    
-    if (!user || !credential) {
+    // Get credential by ID (this identifies the user)
+    const credential = await db.getCredentialByCredentialId(id);
+    if (!credential) {
       await db.deleteChallenge(challengeId);
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
+    // Get user from credential
+    const user = await db.getUserById(credential.user_id);
+    if (!user) {
+      await db.deleteChallenge(challengeId);
+      return res.status(400).json({ message: 'User not found' });
+    }
+
     // Verify authentication response
+    // Note: The Flutter passkeys package returns base64url-encoded strings
+    // Android apps send origin as "android:apk-key-hash:<hash>" format
     const verification = await verifyAuthenticationResponse({
       response: {
-        id: credentialId,
-        rawId: Buffer.from(credentialId, 'base64url'),
+        id: id, // Already base64url-encoded string
+        rawId: id, // Use same as id since they should match
         response: {
-          clientDataJSON: Buffer.from(clientDataJSON, 'base64url'),
-          authenticatorData: Buffer.from(authenticatorData, 'base64url'),
-          signature: Buffer.from(signature, 'base64url'),
+          clientDataJSON: response.clientDataJSON, // Already base64url-encoded
+          authenticatorData: response.authenticatorData, // Already base64url-encoded
+          signature: response.signature, // Already base64url-encoded
         },
-        type: 'public-key',
+        type: type || 'public-key',
       },
       expectedChallenge: storedChallenge.challenge,
-      expectedOrigin: process.env.RP_ORIGIN,
+      expectedOrigin: [
+        process.env.RP_ORIGIN, // Web origin
+        'android:apk-key-hash:K_PdYLiqF4KxnjAlbxdmu3QbKslx3NL5ubOJ6Z9jOEc', // Android app origin
+      ],
       expectedRPID: process.env.RP_ID,
       authenticator: {
-        credentialID: Buffer.from(credential.credential_id, 'base64url'),
+        credentialID: credential.credential_id, // Already stored as base64url
         credentialPublicKey: Buffer.from(credential.public_key, 'base64'),
         counter: credential.counter,
       },
@@ -249,7 +275,7 @@ router.post('/signin/complete', async (req, res) => {
     }
 
     // Update credential counter
-    await db.updateCredentialCounter(credentialId, verification.authenticationInfo.newCounter);
+    await db.updateCredentialCounter(id, verification.authenticationInfo.newCounter);
 
     // Clean up challenge
     await db.deleteChallenge(challengeId);
@@ -274,7 +300,7 @@ router.post('/signin/complete', async (req, res) => {
     });
   } catch (error) {
     console.error('Sign in complete error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: 'Internal server error', error: error.message });
   }
 });
 

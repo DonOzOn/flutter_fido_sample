@@ -34,7 +34,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https"
-                      android:host="households-mailing-operated-latin.trycloudflare.com" />
+                      android:host="formatting-terminals-strips-instant.trycloudflare.com" />
             </intent-filter>
         </activity>
         

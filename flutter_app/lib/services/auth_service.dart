@@ -9,7 +9,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/user.dart';
 
 class AuthService {
-  static const String baseUrl = 'https://households-mailing-operated-latin.trycloudflare.com/api';
+  static const String baseUrl =
+      'https://formatting-terminals-strips-instant.trycloudflare.com/api';
   static const String tokenKey = 'auth_token';
   static const String userKey = 'user_data';
   static final PasskeyAuthenticator _authenticator = PasskeyAuthenticator();
@@ -93,6 +94,19 @@ class AuthService {
 
       final challengeData = json.decode(challengeResponse.body);
 
+      // Debug: Log what we received from server
+      print('Registration challenge received:');
+      print(
+          '- authenticatorSelection: ${challengeData['authenticatorSelection']}');
+      if (challengeData['authenticatorSelection'] != null) {
+        print(
+            '  - residentKey: ${challengeData['authenticatorSelection']['residentKey']}');
+        print(
+            '  - requireResidentKey: ${challengeData['authenticatorSelection']['requireResidentKey']}');
+        print(
+            '  - userVerification: ${challengeData['authenticatorSelection']['userVerification']}');
+      }
+
       // Helper function to convert Buffer object to Base64URL string
       String convertToBase64Url(dynamic value) {
         if (value is String) {
@@ -135,6 +149,18 @@ class AuthService {
                     ))
                 .toList() ??
             [],
+        // CRITICAL: Pass authSelectionType to ensure resident key is created
+        authSelectionType: challengeData['authenticatorSelection'] != null
+            ? AuthenticatorSelectionType(
+                residentKey: (challengeData['authenticatorSelection']['residentKey'] as String?) ?? 'required',
+                requireResidentKey: challengeData['authenticatorSelection']['requireResidentKey'] as bool? ?? false,
+                userVerification: (challengeData['authenticatorSelection']['userVerification'] as String?) ?? 'preferred',
+              )
+            : AuthenticatorSelectionType(
+                residentKey: 'required',
+                requireResidentKey: true,
+                userVerification: 'preferred',
+              ),
       );
 
       final registrationResult = await _authenticator.register(
@@ -154,6 +180,7 @@ class AuthService {
             'attestationObject': registrationResult.attestationObject,
           },
           'type': 'public-key',
+          'challengeId': challengeData['challengeId'],
         }),
       );
 
@@ -176,7 +203,7 @@ class AuthService {
   // Sign in with passkey
   static Future<AuthResponse> signIn(String email) async {
     try {
-      // Step 1: Get authentication challenge from server
+      // Step 1: Get authentication challenge from server with email
       final challengeResponse = await http.post(
         Uri.parse('$baseUrl/auth/signin/begin'),
         headers: {'Content-Type': 'application/json'},
@@ -191,16 +218,20 @@ class AuthService {
       final challengeData = json.decode(challengeResponse.body);
 
       // Step 2: Authenticate using passkey
+      // Use allowCredentials from server to help Android find the specific passkey
       final authRequest = AuthenticateRequestType(
         relyingPartyId: challengeData['rpId'],
         challenge: challengeData['challenge'],
         mediation: MediationType.Optional,
-        preferImmediatelyAvailableCredentials: false,
+        preferImmediatelyAvailableCredentials: true,
         allowCredentials: (challengeData['allowCredentials'] as List?)
             ?.map((cred) => CredentialType(
-                  type: cred['type'],
-                  id: cred['id'],
-                  transports: List<String>.from(cred['transports'] ?? []),
+                  type: cred['type'] as String,
+                  id: cred['id'] as String,
+                  transports: (cred['transports'] as List?)
+                          ?.map((t) => t as String)
+                          .toList() ??
+                      [],
                 ))
             .toList(),
       );
@@ -214,7 +245,6 @@ class AuthService {
         Uri.parse('$baseUrl/auth/signin/complete'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'email': email,
           'id': authResult.id,
           'rawId': authResult.rawId,
           'response': {
@@ -224,6 +254,7 @@ class AuthService {
             'userHandle': authResult.userHandle,
           },
           'type': 'public-key',
+          'challengeId': challengeData['challengeId'],
         }),
       );
 
