@@ -8,7 +8,8 @@
     <application
         android:label="FIDO2 Demo"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         
         <activity
             android:name=".MainActivity"
@@ -29,12 +30,22 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
+            <!-- Deep link for Cloudflare tunnel -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https"
                       android:host="formatting-terminals-strips-instant.trycloudflare.com" />
+            </intent-filter>
+
+            <!-- Deep link for Keycloak OAuth callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.example.fidodemo"
+                      android:host="oauth2redirect" />
             </intent-filter>
         </activity>
         

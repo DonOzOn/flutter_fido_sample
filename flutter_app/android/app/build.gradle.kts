@@ -41,6 +41,8 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.example.fidodemo"
     }
 
     signingConfigs {

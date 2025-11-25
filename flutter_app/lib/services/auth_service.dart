@@ -10,7 +10,7 @@ import '../models/user.dart';
 
 class AuthService {
   static const String baseUrl =
-      'https://formatting-terminals-strips-instant.trycloudflare.com/api';
+      'https://recordings-dealtime-sort-ray.trycloudflare.com/api';
   static const String tokenKey = 'auth_token';
   static const String userKey = 'user_data';
   static final PasskeyAuthenticator _authenticator = PasskeyAuthenticator();
@@ -152,9 +152,15 @@ class AuthService {
         // CRITICAL: Pass authSelectionType to ensure resident key is created
         authSelectionType: challengeData['authenticatorSelection'] != null
             ? AuthenticatorSelectionType(
-                residentKey: (challengeData['authenticatorSelection']['residentKey'] as String?) ?? 'required',
-                requireResidentKey: challengeData['authenticatorSelection']['requireResidentKey'] as bool? ?? false,
-                userVerification: (challengeData['authenticatorSelection']['userVerification'] as String?) ?? 'preferred',
+                residentKey: (challengeData['authenticatorSelection']
+                        ['residentKey'] as String?) ??
+                    'required',
+                requireResidentKey: challengeData['authenticatorSelection']
+                        ['requireResidentKey'] as bool? ??
+                    false,
+                userVerification: (challengeData['authenticatorSelection']
+                        ['userVerification'] as String?) ??
+                    'preferred',
               )
             : AuthenticatorSelectionType(
                 residentKey: 'required',
