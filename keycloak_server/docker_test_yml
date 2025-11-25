@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: keycloak-fido2
+    entrypoint: ["/opt/keycloak/bin/kc.sh"]
+    command: ["start-dev", "--features=preview"]
+    environment:
+      - KC_HOSTNAME_STRICT_HTTPS=false
+      - KC_PROXY=edge
+      - KC_HTTP_RELATIVE_PATH=/
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KC_HTTP_ENABLED=true
+      - KC_HOSTNAME_STRICT=false
+    ports:
+      - "8080:8080"
+    volumes:
+      - keycloak_server_keycloak_data:/opt/keycloak/data
+    networks:
+      keycloak-network:
+        aliases:
+          - keycloak-fido2
+          - keycloak
+    restart: "no"
+
+volumes:
+  keycloak_server_keycloak_data:
+
+networks:
+  keycloak-network:
+    driver: bridge
